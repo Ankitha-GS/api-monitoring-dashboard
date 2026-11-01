@@ -1,0 +1,82 @@
+groups:
+  - name: fastapi-api-alerts
+    rules:
+      # 1. API downtime -------------------------------------------------------------
+      - alert: ApiDown
+        expr: >
+          up{job="fastapi"} == 0
+          or (probe_success{job="blackbox-health"} == 0 unless on() (service_health_status == 0))
+        for: 30s
+        labels: { severity: critical }
+        annotations:
+          summary: "API is DOWN"
+          description: "Prometheus cannot scrape the API and/or the /health probe is failing for more than 30s."
+          root_cause: "Container/process crashed, port unreachable, network issue or deployment failure. Run: docker compose ps ; docker compose logs api"
+
+      # 2. Response time > 3 seconds ------------------------------------------------
+      - alert: HighResponseTime
+        expr: sum by (path) (increase(http_slow_requests_total[2m])) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "Slow responses (> 3s) on {{ $labels.path }}"
+          description: "{{ $value | printf \"%.0f\" }} request(s) took longer than 3 seconds in the last 2 minutes."
+          root_cause: "Slow dependency / DB query / CPU or memory saturation. Check GET /errors/recent?category=slow_response and the server health panels."
+
+      - alert: HighProbeLatency
+        expr: probe_duration_seconds{job=~"blackbox-.*"} > 3
+        for: 15s
+        labels: { severity: warning }
+        annotations:
+          summary: "Synthetic probe to {{ $labels.instance }} slower than 3s"
+          description: "Probe duration is {{ $value | printf \"%.2f\" }}s."
+          root_cause: "Latency visible from outside the app: network, saturation or slow handler."
+
+      # 3. HTTP 500 errors ----------------------------------------------------------
+      - alert: Http500Errors
+        expr: sum by (path) (increase(http_requests_total{status="500"}[2m])) > 0
+        labels: { severity: critical }
+        annotations:
+          summary: "HTTP 500 errors on {{ $labels.path }}"
+          description: "{{ $value | printf \"%.0f\" }} HTTP 500 response(s) in the last 2 minutes."
+          root_cause: "Unhandled exception. Get details: curl -H 'X-API-Key: <key>' http://localhost:8000/errors/recent?category=server_error"
+
+      # 4. Increased failure rate ---------------------------------------------------
+      - alert: HighFailureRate
+        expr: >
+          (
+            sum(rate(http_requests_total{status=~"[45].."}[2m])) / sum(rate(http_requests_total[2m]))
+          ) > 0.10
+          and sum(rate(http_requests_total[2m])) > 0.05
+        for: 30s
+        labels: { severity: critical }
+        annotations:
+          summary: "Failure rate above 10%"
+          description: "{{ $value | humanizePercentage }} of requests failed (HTTP 4xx/5xx) over the last 2 minutes."
+          root_cause: "Check which status code dominates on the dashboard (401 = auth, 429 = rate limit, 500 = app error)."
+
+      # 5. Service health failure ---------------------------------------------------
+      - alert: ServiceHealthFailure
+        expr: service_health_status == 0
+        for: 15s
+        labels: { severity: critical }
+        annotations:
+          summary: "Service health check is failing"
+          description: "/health reports the service as unhealthy (HTTP 503)."
+          root_cause: "A dependency (database) is failing or the service was forced unhealthy. Inspect: curl http://localhost:8000/health"
+
+      # Scenario-specific alerts ----------------------------------------------------
+      - alert: AuthenticationFailures
+        expr: sum(increase(http_requests_total{status=~"401|403"}[2m])) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "Authentication failures detected (HTTP 401/403)"
+          description: "{{ $value | printf \"%.0f\" }} unauthorised request(s) in the last 2 minutes."
+          root_cause: "Invalid/missing X-API-Key: key rotated, client misconfigured, or credential-stuffing. See /errors/recent?category=authentication"
+
+      - alert: RateLimitExceeded
+        expr: sum(increase(http_requests_total{status="429"}[2m])) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "Rate limit exceeded (HTTP 429)"
+          description: "{{ $value | printf \"%.0f\" }} request(s) were throttled in the last 2 minutes."
+          root_cause: "A client is sending more than the allowed quota. See /errors/recent?category=rate_limit for the client address."

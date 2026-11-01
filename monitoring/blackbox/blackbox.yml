@@ -1,0 +1,15 @@
+modules:
+  http_health:
+    prober: http
+    timeout: 5s
+    http:
+      method: GET
+      valid_status_codes: [200]
+  http_users_authenticated:
+    prober: http
+    timeout: 5s
+    http:
+      method: GET
+      headers:
+        X-API-Key: demo-valid-key     # must match API_KEYS of the API
+      valid_status_codes: [200]
